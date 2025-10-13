@@ -1,0 +1,88 @@
+{
+	// Use IntelliSense para saber los atributos posibles.
+	// Mantenga el puntero para ver las descripciones de los existentes atributos.
+	// Para más información, visite: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'sdblib'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=sdblib"
+				],
+				"filter": {
+					"name": "sdblib",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug integration test 'lib'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--test=lib",
+					"--package=sdblib"
+				],
+				"filter": {
+					"name": "lib",
+					"kind": "test"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug executable 'sdb'",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=sdb",
+					"--package=sdb"
+				],
+				"filter": {
+					"name": "sdb",
+					"kind": "bin"
+				}
+			},
+			"args": [
+				"--log-dir",
+				"${workspaceFolder}/.temp",
+				"sleep",
+				"10"
+			],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in executable 'sdb'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--bin=sdb",
+					"--package=sdb"
+				],
+				"filter": {
+					"name": "sdb",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		}
+	]
+}
