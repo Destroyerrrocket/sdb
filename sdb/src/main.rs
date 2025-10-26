@@ -38,7 +38,7 @@ impl std::io::Write for Writer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let buf_len = buf.len();
 
-        self.0.write_all(buf).map(|_| buf_len)
+        self.0.write_all(buf).map(|()| buf_len)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -46,7 +46,8 @@ impl std::io::Write for Writer {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Cli::parse();
 
     let file_log_info = args
@@ -95,17 +96,22 @@ fn main() {
 
     let mut debugger = sdblib::Debugger::new();
 
+    let mut output_ran_command = None;
     if let Some(pid) = args.attachment.pid {
-        debugger.add_proc(pid);
+        debugger.add_proc(pid).unwrap();
     } else if !args.attachment.program.is_empty() {
-        debugger.add_program(
-            args.attachment.program.first().unwrap(),
-            args.attachment.program[1..].iter(),
+        output_ran_command = Some(
+            debugger
+                .add_program(
+                    args.attachment.program.first().unwrap(),
+                    args.attachment.program[1..].iter(),
+                )
+                .unwrap(),
         );
     }
 
-    debugger.wait();
+    debugger.wait().unwrap();
 
-    let mut gui = gui::Gui::new(debugger);
-    gui.run().unwrap();
+    let mut gui = gui::Gui::new(debugger, output_ran_command);
+    gui.run().await.unwrap();
 }

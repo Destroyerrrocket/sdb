@@ -11,7 +11,7 @@ enum ErrorKind {
 enum Commands {
     Continue,
     Exit,
-    Sequence(Vec<Commands>),
+    Sequence(Vec<Self>),
     Error(ErrorKind),
 }
 
@@ -38,7 +38,7 @@ fn parser<'a>() -> impl Parser<'a, &'a str, Commands, extra::Err<Rich<'a, char>>
 fn parse_command(command_str: &str, mut output: &mut dyn std::io::Write) -> Option<Commands> {
     let (command, errs) = parser().parse(command_str.trim()).into_output_errors();
 
-    errs.into_iter().for_each(|e| {
+    for e in errs {
         Report::build(ReportKind::Error, ((), e.span().into_range()))
             .with_config(
                 ariadne::Config::new()
@@ -51,8 +51,8 @@ fn parse_command(command_str: &str, mut output: &mut dyn std::io::Write) -> Opti
             )
             .finish()
             .write(Source::from(&command_str), &mut output)
-            .unwrap()
-    });
+            .unwrap();
+    }
 
     command
 }
@@ -60,24 +60,24 @@ fn parse_command(command_str: &str, mut output: &mut dyn std::io::Write) -> Opti
 fn run_command_ast(
     command: Commands,
     debugger: &mut sdblib::Debugger,
-    mut _output: &mut dyn std::io::Write,
+    mut output: &mut dyn std::io::Write,
 ) -> Result<bool> {
     match command {
         Commands::Continue => {
-            debugger.continue_execution();
+            debugger.continue_execution()?;
         }
         Commands::Exit => {
             return Ok(false);
         }
         Commands::Sequence(commands) => {
             for cmd in commands {
-                if !run_command_ast(cmd, debugger, &mut _output)? {
+                if !run_command_ast(cmd, debugger, &mut output)? {
                     return Ok(false);
                 }
             }
         }
         Commands::Error(err) => {
-            return Err(color_eyre::eyre::eyre!("Error parsing command: {:?}", err));
+            writeln!(output, "Error: {err:?}")?;
         }
     }
 

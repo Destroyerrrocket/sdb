@@ -1,32 +1,22 @@
-use std::io::Stdout;
+use futures::{FutureExt, StreamExt};
 use std::io::Write;
+use std::{io::Stdout, u16};
+use tokio::{io::AsyncBufReadExt, sync::mpsc, task::JoinHandle};
 use tracing::{Level, event};
 
 use ratatui::{
     DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport,
-    crossterm::event::{Event, KeyCode, KeyModifiers},
+    crossterm::event::{KeyCode, KeyModifiers},
     layout::{Constraint, Layout, Rect},
     prelude::CrosstermBackend,
     style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
-use tui_input::Input;
-use tui_input::backend::crossterm::EventHandler;
+
+use tui_input::{Input, backend::crossterm::EventHandler};
 
 use color_eyre::Result;
-
-pub struct Gui {
-    debugger: sdblib::Debugger,
-
-    // Past commands
-    history: Vec<String>,
-    history_current: String,
-    index_history: usize,
-
-    // Current input
-    input: Input,
-}
 
 struct Writer<'a>(
     &'a mut Terminal<CrosstermBackend<Stdout>>,
@@ -34,7 +24,7 @@ struct Writer<'a>(
 );
 
 impl<'a> Writer<'a> {
-    fn new(terminal: &'a mut Terminal<CrosstermBackend<Stdout>>) -> Self {
+    const fn new(terminal: &'a mut Terminal<CrosstermBackend<Stdout>>) -> Self {
         Writer(terminal, Vec::new())
     }
 }
@@ -57,50 +47,187 @@ impl std::io::Write for Writer<'_> {
     }
 }
 
+#[derive(Clone, Debug)]
+enum Event {
+    Error,
+    Tick,
+    ChildOutput(String),
+    Crossterm(ratatui::crossterm::event::Event),
+}
+
+#[derive(Debug)]
+pub struct TokioEventHandler {
+    _tx: mpsc::UnboundedSender<Event>,
+    rx: mpsc::UnboundedReceiver<Event>,
+    _task: Option<JoinHandle<()>>,
+}
+
+impl TokioEventHandler {
+    pub fn new(child_output: Option<std::process::ChildStdout>) -> Self {
+        let tick_rate = std::time::Duration::from_millis(250);
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let tx2 = tx.clone();
+
+        let task = tokio::spawn(async move {
+            let mut reader = ratatui::crossterm::event::EventStream::new();
+            let mut interval = tokio::time::interval(tick_rate);
+            let mut child_output_reader = child_output.map(|stdout| {
+                tokio::io::BufReader::new(tokio::process::ChildStdout::from_std(stdout).unwrap())
+                    .lines()
+            });
+            loop {
+                let delay = interval.tick();
+                let crossterm_event = reader.next().fuse();
+                if child_output_reader.is_none() {
+                    tokio::select! {
+                        maybe_event = crossterm_event => {
+                            match maybe_event {
+                                Some(Ok(evt)) => {
+                                    tx.send(Event::Crossterm(evt)).unwrap();
+                                }
+                                Some(Err(_)) => {
+                                    let _ = tx.send(Event::Error);
+                                }
+                                None => {},
+                            }
+                        },
+                        _ = delay => {
+                            let _ = tx.send(Event::Tick);
+                        },
+                    }
+                } else {
+                    let child_output_reader_unwrap = child_output_reader.as_mut().unwrap();
+                    let child_output = child_output_reader_unwrap.next_line();
+                    tokio::select! {
+                        maybe_event = crossterm_event => {
+                            match maybe_event {
+                                Some(Ok(evt)) => {
+                                    tx.send(Event::Crossterm(evt)).unwrap();
+                                }
+                                Some(Err(_)) => {
+                                    let _ = tx.send(Event::Error);
+                                }
+                                None => {},
+                            }
+                        },
+                        _ = delay => {
+                            let _ = tx.send(Event::Tick);
+                        },
+                        maybe_line = child_output => {
+                            if let Ok(line) = maybe_line {
+                                if let Some(line) = line {
+                                    tx.send(Event::ChildOutput(line)).unwrap();
+                                } else {
+                                    child_output_reader = None;
+                                }
+                            } else {
+                                let _ = tx.send(Event::Error);
+                                child_output_reader = None;
+                            }
+                        },
+                    }
+                }
+            }
+        });
+
+        Self {
+            _tx: tx2,
+            rx,
+            _task: Some(task),
+        }
+    }
+
+    async fn next(&mut self) -> Result<Event> {
+        self.rx
+            .recv()
+            .await
+            .ok_or_else(|| color_eyre::eyre::eyre!("Unable to get event"))
+    }
+}
+
+pub struct Gui {
+    debugger: sdblib::Debugger,
+
+    // Past commands
+    history: Vec<String>,
+    history_current: String,
+    index_history: usize,
+
+    // Current input
+    input: Input,
+    // Child program output
+    child_output: Option<std::process::ChildStdout>,
+}
+
 impl Gui {
-    pub fn new(debugger: sdblib::Debugger) -> Self {
-        Gui {
+    pub fn new(
+        debugger: sdblib::Debugger,
+        output_ran_command: Option<std::process::ChildStdout>,
+    ) -> Self {
+        Self {
             debugger,
             history: Vec::new(),
             history_current: String::new(),
             index_history: 0,
             input: Input::default(),
+            child_output: output_ran_command,
         }
     }
 
-    pub fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         color_eyre::install()?;
+        let mut events = TokioEventHandler::new(self.child_output.take());
+
         let mut terminal = ratatui::init_with_options(TerminalOptions {
             viewport: Viewport::Inline(1),
         });
-        let result = self.run_impl(&mut terminal);
-        ratatui::restore();
-        result
+        self.run_impl(&mut terminal, &mut events).await
     }
 
-    fn run_impl(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    async fn run_impl(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        events: &mut TokioEventHandler,
+    ) -> Result<()> {
         loop {
             terminal.draw(|frame| self.render(frame))?;
 
-            let event = ratatui::crossterm::event::read()?;
-            if let Event::Key(key) = event {
-                match key.code {
-                    KeyCode::Enter => {
-                        if !self.run_command(terminal)? {
+            let event = events.next().await?;
+            match event {
+                Event::Error => {
+                    return Err(color_eyre::eyre::eyre!("Error receiving event"));
+                }
+                Event::Tick => {
+                    // Nothing to do on tick for now
+                }
+                Event::ChildOutput(str) => {
+                    let mut writer = Writer::new(terminal);
+                    writeln!(writer, "{str}")?;
+                    writer.flush()?;
+                }
+                Event::Crossterm(crossterm) => {
+                    let ratatui::crossterm::event::Event::Key(key) = crossterm else {
+                        continue;
+                    };
+                    match key.code {
+                        KeyCode::Enter => {
+                            if !self.run_command(terminal)? {
+                                break;
+                            }
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             break;
                         }
-                    }
-                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        break;
-                    }
-                    KeyCode::Up => {
-                        self.move_history(-1);
-                    }
-                    KeyCode::Down => {
-                        self.move_history(1);
-                    }
-                    _ => {
-                        self.input.handle_event(&event);
+                        KeyCode::Up => {
+                            self.move_history(-1);
+                        }
+                        KeyCode::Down => {
+                            self.move_history(1);
+                        }
+                        _ => {
+                            self.input.handle_event(&crossterm);
+                        }
                     }
                 }
             }
@@ -113,11 +240,7 @@ impl Gui {
             return;
         }
 
-        let new_index = if direction > 0 {
-            self.index_history.saturating_add(direction as usize)
-        } else {
-            self.index_history.saturating_sub((-direction) as usize)
-        };
+        let new_index = self.index_history.saturating_add_signed(direction);
 
         if new_index > self.history.len() {
             return;
@@ -183,12 +306,12 @@ impl Gui {
         let scroll = self.input.visual_scroll(area.width as usize);
         let input = Paragraph::new(self.input.value())
             .style(Style::bold(Color::White.into()))
-            .scroll((0, scroll as u16));
+            .scroll((0, scroll.try_into().unwrap()));
         frame.render_widget(input, area);
 
         // Ratatui hides the cursor unless it's explicitly set. Position the  cursor past the
         // end of the input text and one line down from the border to the input line
         let x = self.input.visual_cursor().max(scroll) - scroll;
-        frame.set_cursor_position((area.x + x as u16, area.y));
+        frame.set_cursor_position((area.x + u16::try_from(x).unwrap(), area.y));
     }
 }
