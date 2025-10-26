@@ -4,12 +4,11 @@ use color_eyre::Result;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ErrorKind {
-    UnexpectedText(String),
-    Unknown,
+    UnexpectedCommand(String),
 }
 
 #[derive(Clone, Debug)]
-pub enum Commands {
+enum Commands {
     Continue,
     Exit,
     Sequence(Vec<Commands>),
@@ -17,10 +16,18 @@ pub enum Commands {
 }
 
 fn parser<'a>() -> impl Parser<'a, &'a str, Commands, extra::Err<Rich<'a, char>>> {
+    let error_command = any()
+        .filter(|c: &char| c.is_ascii_alphabetic())
+        .repeated()
+        .at_least(1)
+        .collect::<String>()
+        .map(|s: String| ErrorKind::UnexpectedCommand(s));
+
     let single_command = choice((
         just("continue").padded().to(Commands::Continue),
         just("exit").padded().to(Commands::Exit),
-    ));
+    ))
+    .recover_with(via_parser(error_command.map(Commands::Error)));
 
     single_command
         .separated_by(just(";"))
@@ -53,7 +60,7 @@ fn parse_command(command_str: &str, mut output: &mut dyn std::io::Write) -> Opti
 fn run_command_ast(
     command: Commands,
     debugger: &mut sdblib::Debugger,
-    mut output: &mut dyn std::io::Write,
+    mut _output: &mut dyn std::io::Write,
 ) -> Result<bool> {
     match command {
         Commands::Continue => {
@@ -64,7 +71,7 @@ fn run_command_ast(
         }
         Commands::Sequence(commands) => {
             for cmd in commands {
-                if !run_command_ast(cmd, debugger, &mut output)? {
+                if !run_command_ast(cmd, debugger, &mut _output)? {
                     return Ok(false);
                 }
             }
@@ -85,5 +92,5 @@ pub fn run_command(
     let Some(command) = parse_command(command, output) else {
         return Ok(true);
     };
-    return run_command_ast(command, debugger, &mut output);
+    run_command_ast(command, debugger, &mut output)
 }

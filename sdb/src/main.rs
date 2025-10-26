@@ -1,4 +1,11 @@
-use std::{thread::sleep, time::Duration};
+#![deny(clippy::all)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::complexity)]
+#![warn(clippy::correctness)]
+#![warn(clippy::nursery)]
+#![warn(clippy::perf)]
+#![warn(clippy::style)]
+#![warn(clippy::suspicious)]
 
 use clap::{Args, Parser};
 use tracing::subscriber::set_global_default;

@@ -1,3 +1,12 @@
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::complexity)]
+#![warn(clippy::correctness)]
+#![warn(clippy::nursery)]
+#![warn(clippy::perf)]
+#![warn(clippy::style)]
+#![warn(clippy::suspicious)]
+
 use std::os::unix::process::CommandExt;
 
 use tracing::{Level, event, instrument};
@@ -25,8 +34,9 @@ impl Drop for Debugger {
 }
 
 impl Debugger {
-    pub fn new() -> Self {
-        Debugger {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
             managed_processes: Vec::new(),
             attached_processes: Vec::new(),
         }

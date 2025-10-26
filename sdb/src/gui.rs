@@ -1,29 +1,20 @@
+use std::io::Stdout;
 use std::io::Write;
-use std::{
-    io::{self, Stdout},
-    usize,
-};
 use tracing::{Level, event};
 
 use ratatui::{
     DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport,
-    crossterm::{
-        event::{Event, KeyCode, KeyModifiers},
-        style::Colors,
-    },
+    crossterm::event::{Event, KeyCode, KeyModifiers},
     layout::{Constraint, Layout, Rect},
     prelude::CrosstermBackend,
     style::{Color, Style, Stylize},
-    text::{Line, Span, ToSpan},
-    widgets::{Block, List, Paragraph, Widget},
+    text::{Line, Span},
+    widgets::{Paragraph, Widget},
 };
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use color_eyre::{
-    Result,
-    eyre::{WrapErr, bail},
-};
+use color_eyre::Result;
 
 pub struct Gui {
     debugger: sdblib::Debugger,
